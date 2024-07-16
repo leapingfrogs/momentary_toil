@@ -1,0 +1,15 @@
+[package]
+name = "momentary_toil"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures = "0.3.30"
+google-calendar = "0.7.0"
+url = "2.5.2"
+tokio = { version = "1", features = ["full"] }
+eeep = "0.1.0"
+chrono = "0.4.38"
+config = "0.14.0"
+confy = "0.6.1"
+serde = "1.0.204"
