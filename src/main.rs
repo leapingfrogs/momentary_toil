@@ -55,7 +55,7 @@ fn prompt(instr: Option<&str>, msg: &str) -> String {
     io::stdin()
         .read_line(&mut buffer)
         .expect("User to enter a value");
-    buffer
+    buffer.trim().to_string()
 }
 
 async fn do_call<'a>(cfg: &mut ToilConfig, start: DateTime<Utc>, end: DateTime<Utc>) {
