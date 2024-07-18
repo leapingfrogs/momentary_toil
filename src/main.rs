@@ -1,8 +1,18 @@
+#[macro_use]
+extern crate rocket;
+
 use chrono::prelude::*;
 use futures::executor::block_on;
 use google_calendar::{events::Events, Client};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::Mutex, thread, time};
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread::sleep;
+use std::time::Duration;
+use rocket::{Rocket, State};
+use tokio::task::spawn_blocking;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct ToilConfig {
@@ -12,53 +22,107 @@ struct ToilConfig {
     refresh_token: Option<String>,
 }
 
+impl ToilConfig {
+    fn new() -> Self {
+        let mut cfg: ToilConfig = confy::load("momentary_toil", None).unwrap();
+
+        if cfg.client_id.is_none() {
+            cfg.client_id = Some(get_user_input(None, "Enter your client_id: "));
+        }
+        if cfg.client_secret.is_none() {
+            cfg.client_secret = Some(get_user_input(None, "Enter your client_secret: "));
+        }
+        if cfg.redirect_uri.is_none() {
+            cfg.redirect_uri = Some(get_user_input(None, "Enter your redirect_uri: "));
+        }
+        confy::store("momentary_toil", None, cfg.clone()).unwrap();
+        cfg
+    }
+}
+
+static HANDLE: Lazy<Mutex<Option<CallbackData>>> = Lazy::new(Default::default);
+
+#[derive(Clone, Debug)]
+struct CallbackData {
+    state: String,
+    code: String,
+}
+
+struct MyState {
+    tx: Sender<CallbackData>,
+}
+
+#[get("/callback?<state>&<code>", format = "*/*")]
+fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
+    let callback_data = CallbackData {
+        state: state.to_string(),
+        code: code.to_string(),
+    };
+
+    st.tx.send(callback_data).unwrap();
+
+    "Thank you, you may now close this window."
+}
+
+
+
 #[tokio::main]
+// #[launch]
 async fn main() {
-    let mut cfg: ToilConfig = confy::load("momentary_toil", None).unwrap();
+    let (tx, rx) = mpsc::channel();
 
-    if cfg.client_id.is_none() {
-        cfg.client_id = Some(prompt(None, "Enter your client_id: "));
-    }
-    if cfg.client_secret.is_none() {
-        cfg.client_secret = Some(prompt(None, "Enter your client_secret: "));
-    }
-    if cfg.redirect_uri.is_none() {
-        cfg.redirect_uri = Some(prompt(None, "Enter your redirect_uri: "));
-    }
-    confy::store("momentary_toil", None, cfg.clone()).unwrap();
+    let mut cfg = ToilConfig::new();
 
-    let current_week = Utc::now().iso_week();
-    let start_week =
-        NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), Weekday::Mon)
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .unwrap();
-    let start_week = Utc.from_local_datetime(&start_week).single().unwrap();
-    let end_week =
-        NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), Weekday::Sat)
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .unwrap();
-    let end_week = Utc.from_local_datetime(&end_week).single().unwrap();
+    let start_week = start_of_week();
+    let end_week = end_of_week();
+
     println!(
         "Week:: {:?} -> {:?}",
         start_week.date_naive(),
         end_week.date_naive()
     );
-    block_on(do_call(&mut cfg, start_week, end_week));
+
+    let join_handle =
+        tokio::spawn(async move { rocket::build().manage(MyState {tx}).mount("/", routes![callback]).launch().await });
+
+    block_on(do_call(rx, &mut cfg, start_week, end_week));
+    // let _ = join_handle.await;
 }
 
-fn prompt(instr: Option<&str>, msg: &str) -> String {
-    if let Some(inst) = instr {
-        println!("{inst}");
+fn end_of_week() -> DateTime<Utc> {
+    day_of_week(Weekday::Sat)
+}
+
+fn start_of_week() -> DateTime<Utc> {
+    day_of_week(Weekday::Mon)
+}
+
+fn day_of_week(weekday: Weekday) -> DateTime<Utc> {
+    let current_week = Utc::now().iso_week();
+    let result =
+        NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .unwrap();
+    Utc.from_local_datetime(&result).single().unwrap()
+}
+
+/// A function to display messages and get user input.
+/// It accepts an optional instruction and a mandatory message.
+/// If an instruction is given, it's displayed before the message.
+/// After displaying the messages, it takes user input,
+/// trims it down and returns it.
+fn get_user_input(optional_instruction: Option<&str>, mandatory_message: &str) -> String {
+    if let Some(instruction) = optional_instruction {
+        println!("{}", instruction);
     }
-    println!("{msg}");
-    let mut buffer = String::new();
+    println!("{}", mandatory_message);
+    let mut input_buffer = String::new();
     io::stdin()
-        .read_line(&mut buffer)
-        .expect("User to enter a value");
-    buffer.trim().to_string()
+        .read_line(&mut input_buffer)
+        .expect("Failed to read from stdin");
+    input_buffer.trim().to_string()
 }
-
-async fn do_call<'a>(cfg: &mut ToilConfig, start: DateTime<Utc>, end: DateTime<Utc>) {
+async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: DateTime<Utc>, end: DateTime<Utc>) {
     let access = "".to_string();
     let refresh = cfg.refresh_token.clone().unwrap_or("".to_string());
 
@@ -84,28 +148,18 @@ async fn do_call<'a>(cfg: &mut ToilConfig, start: DateTime<Utc>, end: DateTime<U
             "https://www.googleapis.com/auth/calendar.settings.readonly".to_string(),
         ]);
 
-        // TODO replace by runnng a background server to capture the response?
-        let buffer = prompt(
-            Some(&format!(
-                "Please open the following Url: {user_consent_url}"
-            )),
-            ".. and paste the response URL below:",
+        // launch a server to receive the response...
+        println!("Server started!");
+        println!(
+            "Please open the following Url: {user_consent_url}"
         );
-        let mut params: HashMap<String, String> = HashMap::new();
-        url::Url::parse(&buffer)
-            .expect("a valid url")
-            .query_pairs()
-            .filter(|(k, _v)| k == "code" || k == "state")
-            .for_each(|(k, v)| {
-                params.insert(k.into_owned(), v.into_owned());
-            });
-        // println!("Params: {:?}", params);
 
         // In your redirect URL capture the code sent and our state.
         // Send it along to the request for the token.
-        let code = params.get("code").expect("A code to be available");
-        let state = params.get("state").expect("A state to be available");
-        let access_token = gcal.get_access_token(code, state).await.unwrap();
+        let result = rx.recv().unwrap();
+        let code = result.code;
+        let state = result.state;
+        let access_token = gcal.get_access_token(&code, &state).await.unwrap();
         // println!(
         //     "Refresh Token: {:?} expires_in: {:?}\nAccess Token: {:?} expires_in: {:?}",
         //     access_token.refresh_token,
