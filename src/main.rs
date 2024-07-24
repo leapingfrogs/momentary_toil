@@ -4,16 +4,18 @@ extern crate rocket;
 use chrono::prelude::*;
 use futures::executor::block_on;
 use google_calendar::{events::Events, Client};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io, sync::Mutex, thread, time};
+use std::io;
+use std::string::ToString;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::thread::sleep;
-use std::time::Duration;
-use rocket::{Rocket, State};
-use tokio::task::spawn_blocking;
+use rocket::State;
 
+const REQUIRED_SCOPES: [&str; 3] = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.settings.readonly",
+];
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct ToilConfig {
     client_id: Option<String>,
@@ -39,8 +41,6 @@ impl ToilConfig {
         cfg
     }
 }
-
-static HANDLE: Lazy<Mutex<Option<CallbackData>>> = Lazy::new(Default::default);
 
 #[derive(Clone, Debug)]
 struct CallbackData {
@@ -103,7 +103,7 @@ fn day_of_week(weekday: Weekday) -> DateTime<Utc> {
         NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday)
             .and_then(|d| d.and_hms_opt(0, 0, 0))
             .unwrap();
-    Utc.from_local_datetime(&result).single().unwrap()
+    Utc.from_local_datetime(&result).single().expect("A valid date for the week")
 }
 
 /// A function to display messages and get user input.
@@ -142,11 +142,8 @@ async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: Da
         // Get the URL to request consent from the user.
         // You can optionally pass in scopes. If none are provided, then the
         // resulting URL will not have any scopes.
-        let user_consent_url = gcal.user_consent_url(&[
-            "https://www.googleapis.com/auth/calendar.readonly".to_string(),
-            "https://www.googleapis.com/auth/calendar.events.readonly".to_string(),
-            "https://www.googleapis.com/auth/calendar.settings.readonly".to_string(),
-        ]);
+        let scopes : [String; 3] = REQUIRED_SCOPES.into_iter().map(String::from).collect::<Vec<String>>().try_into().unwrap();
+        let user_consent_url = gcal.user_consent_url(&scopes);
 
         // launch a server to receive the response...
         println!("Server started!");
