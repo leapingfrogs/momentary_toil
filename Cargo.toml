@@ -13,3 +13,4 @@ confy = "0.6.1"
 serde = { version = "1.0.204", default-features = false }
 rocket = { version = "0.5.1", default-features = false }
 clap = { version = "4.5.13", features = ["derive"] }
+ratatui = "0.27.0"
