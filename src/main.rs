@@ -4,12 +4,13 @@ extern crate rocket;
 use chrono::prelude::*;
 use futures::executor::block_on;
 use google_calendar::{events::Events, Client};
+use rocket::figment::Figment;
+use rocket::State;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::string::ToString;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use rocket::State;
 
 const REQUIRED_SCOPES: [&str; 3] = [
     "https://www.googleapis.com/auth/calendar.readonly",
@@ -64,8 +65,6 @@ fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
     "Thank you, you may now close this window."
 }
 
-
-
 #[tokio::main]
 // #[launch]
 async fn main() {
@@ -75,6 +74,10 @@ async fn main() {
 
     let start_week = start_of_week();
     let end_week = end_of_week();
+    // cfg.client_id.get_or_insert_with(|| prompt(None, "Enter your client_id: "));
+    // cfg.client_secret.get_or_insert_with(|| prompt(None, "Enter your client_secret: "));
+    // cfg.redirect_uri.get_or_insert_with(|| prompt(None, "Enter your redirect_uri: "));
+    // confy::store("momentary_toil", None, cfg.clone()).unwrap();
 
     println!(
         "Week:: {:?} -> {:?}",
@@ -82,8 +85,13 @@ async fn main() {
         end_week.date_naive()
     );
 
-    let join_handle =
-        tokio::spawn(async move { rocket::build().manage(MyState {tx}).mount("/", routes![callback]).launch().await });
+    let _join_handle = tokio::spawn(async move {
+        rocket::custom(Figment::from(rocket::Config::default()).join(("log_level", "off")))
+            .manage(MyState { tx })
+            .mount("/", routes![callback])
+            .launch()
+            .await
+    });
 
     block_on(do_call(rx, &mut cfg, start_week, end_week));
     // let _ = join_handle.await;
@@ -99,11 +107,12 @@ fn start_of_week() -> DateTime<Utc> {
 
 fn day_of_week(weekday: Weekday) -> DateTime<Utc> {
     let current_week = Utc::now().iso_week();
-    let result =
-        NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday)
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .unwrap();
-    Utc.from_local_datetime(&result).single().expect("A valid date for the week")
+    let result = NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .unwrap();
+    Utc.from_local_datetime(&result)
+        .single()
+        .expect("A valid date for the week")
 }
 
 /// A function to display messages and get user input.
@@ -122,7 +131,12 @@ fn get_user_input(optional_instruction: Option<&str>, mandatory_message: &str) -
         .expect("Failed to read from stdin");
     input_buffer.trim().to_string()
 }
-async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: DateTime<Utc>, end: DateTime<Utc>) {
+async fn do_call<'a>(
+    rx: Receiver<CallbackData>,
+    cfg: &mut ToilConfig,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) {
     let access = "".to_string();
     let refresh = cfg.refresh_token.clone().unwrap_or("".to_string());
 
@@ -142,14 +156,17 @@ async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: Da
         // Get the URL to request consent from the user.
         // You can optionally pass in scopes. If none are provided, then the
         // resulting URL will not have any scopes.
-        let scopes : [String; 3] = REQUIRED_SCOPES.into_iter().map(String::from).collect::<Vec<String>>().try_into().unwrap();
+        let scopes: [String; 3] = REQUIRED_SCOPES
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<String>>()
+            .try_into()
+            .unwrap();
         let user_consent_url = gcal.user_consent_url(&scopes);
 
         // launch a server to receive the response...
         println!("Server started!");
-        println!(
-            "Please open the following Url: {user_consent_url}"
-        );
+        println!("Please open the following Url: {user_consent_url}");
 
         // In your redirect URL capture the code sent and our state.
         // Send it along to the request for the token.
@@ -157,13 +174,21 @@ async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: Da
         let code = result.code;
         let state = result.state;
         let access_token = gcal.get_access_token(&code, &state).await.unwrap();
-        // println!(
-        //     "Refresh Token: {:?} expires_in: {:?}\nAccess Token: {:?} expires_in: {:?}",
-        //     access_token.refresh_token,
-        //     access_token.refresh_token_expires_in,
-        //     access_token.access_token,
-        //     access_token.expires_in
-        // );
+
+        // let mut params: HashMap<String, String> = HashMap::new();
+        // url::Url::parse(&buffer)
+        //     .expect("a valid url")
+        //     .query_pairs()
+        //     .filter(|(k, _v)| k == "code" || k == "state")
+        //     .for_each(|(k, v)| {
+        //         params.insert(k.into_owned(), v.into_owned());
+        //     });
+
+        // // In your redirect URL capture the code sent and our state.
+        // // Send it along to the request for the token.
+        // let code = params.get("code").expect("A code to be available");
+        // let state = params.get("state").expect("A state to be available");
+        // let access_token = gcal.get_access_token(code, state).await.unwrap();
 
         if !access_token.refresh_token.eq("") {
             cfg.refresh_token = Some(access_token.refresh_token);
@@ -173,13 +198,7 @@ async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: Da
         // You can additionally refresh the access token with the following.
         // You must have a refresh token to be able to call this function.
         let access_token = gcal.refresh_access_token().await.unwrap();
-        // println!(
-        //     "Refresh Token: {:?} expires_in: {:?}\nAccess Token: {:?} expires_in: {:?}",
-        //     access_token.refresh_token,
-        //     access_token.refresh_token_expires_in,
-        //     access_token.access_token,
-        //     access_token.expires_in
-        // );
+
         if !access_token.refresh_token.eq("") {
             cfg.refresh_token = Some(access_token.refresh_token);
             confy::store("momentary_toil", None, cfg.clone()).unwrap();
@@ -207,34 +226,32 @@ async fn do_call<'a>(rx: Receiver<CallbackData>, cfg: &mut ToilConfig, start: Da
         .await
         .expect("A list of events");
 
-    let total_duration = events
+    let total_duration: i64 = events
         .body
         .iter()
         .filter(|e| {
             !e.event_type.eq("workingLocation")
-                && e.start.as_ref().is_some_and(|s| s.date.is_none())
-                && e.end.as_ref().is_some_and(|e| e.date.is_none())
+                && e.start.as_ref().map(|s| s.date.is_none()).unwrap_or(false)
+                && e.end.as_ref().map(|e| e.date.is_none()).unwrap_or(false)
         })
-        .fold(0, |acc, e| {
+        .map(|e| {
             if let (Some(start), Some(end)) = (
-                &e.start.as_ref().and_then(|s| s.date_time),
-                &e.end.as_ref().and_then(|e| e.date_time),
+                e.start.as_ref().and_then(|s| s.date_time),
+                e.end.as_ref().and_then(|e| e.date_time),
             ) {
-                // println!("{:?}", e.summary);
                 let duration = end.signed_duration_since(start);
-                let minutes = duration.num_minutes();
-                acc + minutes
+                duration.num_minutes()
             } else {
-                acc
+                0
             }
-        });
+        })
+        .sum();
+
+    let work_hours_per_week = 40.0;
     let meeting_hours = total_duration as f32 / 60.0;
-    let full_week = 40.0;
-    println!(
-        "  Total meeting time this week: {:.2} / {:.2} [{:.2}%]\n  Non-Meeting time: {:.2}",
-        meeting_hours,
-        full_week,
-        meeting_hours * 100.0 / full_week,
-        full_week - meeting_hours,
-    );
+    let non_meeting_hours = work_hours_per_week - meeting_hours;
+    let meeting_percentage = meeting_hours * 100.0 / work_hours_per_week;
+
+    println!("  Total meeting time this week: {meeting_hours:.2} / {work_hours_per_week:.2} [{meeting_percentage:.2}%]");
+    println!("  Non-Meeting time: {non_meeting_hours:.2}");
 }
