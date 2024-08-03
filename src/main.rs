@@ -2,6 +2,7 @@
 extern crate rocket;
 
 use chrono::prelude::*;
+use clap::Parser;
 use futures::executor::block_on;
 use google_calendar::{events::Events, Client};
 use rocket::figment::Figment;
@@ -65,9 +66,24 @@ fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
     "Thank you, you may now close this window."
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = false)]
+    gui: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    details: bool,
+
+    #[arg(short, long, default_value_t = 1)]
+    weeks: u8,
+}
+
 #[tokio::main]
 // #[launch]
 async fn main() {
+    let args = Args::parse();
+
     let (tx, rx) = mpsc::channel();
 
     let mut cfg = ToilConfig::new();
@@ -93,7 +109,7 @@ async fn main() {
             .await
     });
 
-    block_on(do_call(rx, &mut cfg, start_week, end_week));
+    block_on(do_call(rx, &mut cfg, &args, start_week, end_week));
     // let _ = join_handle.await;
 }
 
@@ -134,6 +150,7 @@ fn get_user_input(optional_instruction: Option<&str>, mandatory_message: &str) -
 async fn do_call<'a>(
     rx: Receiver<CallbackData>,
     cfg: &mut ToilConfig,
+    args: &Args,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) {
@@ -175,21 +192,6 @@ async fn do_call<'a>(
         let state = result.state;
         let access_token = gcal.get_access_token(&code, &state).await.unwrap();
 
-        // let mut params: HashMap<String, String> = HashMap::new();
-        // url::Url::parse(&buffer)
-        //     .expect("a valid url")
-        //     .query_pairs()
-        //     .filter(|(k, _v)| k == "code" || k == "state")
-        //     .for_each(|(k, v)| {
-        //         params.insert(k.into_owned(), v.into_owned());
-        //     });
-
-        // // In your redirect URL capture the code sent and our state.
-        // // Send it along to the request for the token.
-        // let code = params.get("code").expect("A code to be available");
-        // let state = params.get("state").expect("A state to be available");
-        // let access_token = gcal.get_access_token(code, state).await.unwrap();
-
         if !access_token.refresh_token.eq("") {
             cfg.refresh_token = Some(access_token.refresh_token);
             confy::store("momentary_toil", None, cfg.clone()).unwrap();
@@ -226,6 +228,7 @@ async fn do_call<'a>(
         .await
         .expect("A list of events");
 
+    let mut summary: Vec<String> = Vec::new();
     let total_duration: i64 = events
         .body
         .iter()
@@ -240,7 +243,35 @@ async fn do_call<'a>(
                 e.end.as_ref().and_then(|e| e.date_time),
             ) {
                 let duration = end.signed_duration_since(start);
-                duration.num_minutes()
+                let attendee = e
+                    .attendees
+                    .iter()
+                    .find(|a| a.self_ && a.response_status != "declined");
+
+                let start_hour = e
+                    .start
+                    .as_ref()
+                    .and_then(|s| s.date_time.map(|d| d.hour()))
+                    .unwrap_or(0);
+                let end_hour = e
+                    .end
+                    .as_ref()
+                    .and_then(|s| s.date_time.map(|d| d.hour()))
+                    .unwrap_or(0);
+                if (start_hour < 18 && end_hour > 7)
+                    && (attendee.is_some() || e.organizer.as_ref().map_or(false, |o| o.self_))
+                {
+                    summary.push(format!(
+                        "{} {}: [{:.2}mins] {}",
+                        start.weekday(),
+                        start.time(),
+                        duration.num_minutes(),
+                        e.summary,
+                    ));
+                    duration.num_minutes()
+                } else {
+                    0
+                }
             } else {
                 0
             }
@@ -254,4 +285,19 @@ async fn do_call<'a>(
 
     println!("  Total meeting time this week: {meeting_hours:.2} / {work_hours_per_week:.2} [{meeting_percentage:.2}%]");
     println!("  Non-Meeting time: {non_meeting_hours:.2}");
+    if args.details {
+        for s in summary {
+            println!("    > {}", s);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tests_available() {
+        assert!(true);
+    }
 }
