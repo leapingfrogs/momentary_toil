@@ -185,9 +185,12 @@ impl Widget for &App {
 async fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    let mut terminal = tui::init()?;
-    let app_result = App::default().run(&mut terminal);
-    tui::restore()?;
+    let mut app_result: io::Result<()> = Ok(());
+    if args.gui {
+        let mut terminal = tui::init()?;
+        app_result = App::default().run(&mut terminal);
+        tui::restore()?;
+    }
 
     // Start: should move to in ratatui state?
     let (tx, rx) = mpsc::channel();
