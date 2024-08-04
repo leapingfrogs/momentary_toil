@@ -9,7 +9,10 @@ google-calendar = { version = "0.7.0", default-features = false, features = ["ru
 tokio = "1"
 chrono = { version = "0.4.38", default-features = false }
 config = { version = "0.14.0", default-features = false }
-confy = "0.6.1"
 serde = { version = "1.0.204", default-features = false }
 rocket = { version = "0.5.1", default-features = false }
 clap = { version = "4.5.13", features = ["derive"] }
+mockall = "0.13.0"
+figment = { version = "0.10.19", features = ["toml"] }
+directories = "5.0.1"
+toml = "0.8.19"
