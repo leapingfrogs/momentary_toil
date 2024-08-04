@@ -24,4 +24,4 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
       - run: cargo build --verbose
-      - run: cargo nexttest --verbose
+      - run: cargo nextest run
