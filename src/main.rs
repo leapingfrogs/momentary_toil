@@ -58,7 +58,7 @@ impl ToilConfig {
     fn new(args: Args) -> Self
     {
         let config_path = match ProjectDirs::from("com", "leapingfrogs", "Momentary Toil") {
-            Some(proj_dirs) => Path::join(proj_dirs.config_local_dir(), "Config.toml"),
+            Some(proj_dirs) => Path::join(proj_dirs.config_local_dir(), "Config2.toml"),
             None => PathBuf::from("Config.toml"),
         };
 
@@ -81,27 +81,6 @@ impl ToilConfig {
     }
 }
 
-#[derive(Clone, Debug)]
-struct CallbackData {
-    state: String,
-    code: String,
-}
-
-struct MyState {
-    tx: Sender<CallbackData>,
-}
-
-#[get("/callback?<state>&<code>", format = "*/*")]
-fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
-    let callback_data = CallbackData {
-        state: state.to_string(),
-        code: code.to_string(),
-    };
-
-    st.tx.send(callback_data).unwrap();
-
-    "Thank you, you may now close this window."
-}
 
 #[derive(Parser, Debug, Default, Clone)]
 #[command(version, about, long_about = None)]
@@ -177,8 +156,7 @@ fn build_results(events: Vec<ToilEvent>, cfg: &ToilConfig) -> (Vec<String>, i64)
     (summary, total_duration)
 }
 
-fn get_checked_configuration(args: Args, mut helper: Box<dyn CmdLineHelper>) -> ToilConfig
-{
+fn get_checked_configuration(args: Args, mut helper: Box<dyn CmdLineHelper>) -> ToilConfig {
     let mut cfg =
         if cfg!(test) {
             Figment::from(Serialized::defaults(ToilConfig::default()))
@@ -230,8 +208,7 @@ impl TimeUtil {
     }
 }
 
-struct CmdLine<R, W>
-{
+struct CmdLine<R, W> {
     reader: R,
     writer: W,
 }
@@ -292,9 +269,32 @@ async fn retreive_events<'a>(
     cfg: &mut ToilConfig,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-) -> Vec<ToilEvent> {
+) -> Vec<ToilEvent>
+{
     let (tx, rx) = mpsc::channel();
     let _join_handle = tokio::spawn(async move {
+        #[derive(Clone, Debug)]
+        struct CallbackData {
+            state: String,
+            code: String,
+        }
+
+        struct MyState {
+            tx: Sender<CallbackData>,
+        }
+
+        #[get("/callback?<state>&<code>", format = "*/*")]
+        fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
+            let callback_data = CallbackData {
+                state: state.to_string(),
+                code: code.to_string(),
+            };
+
+            st.tx.send(callback_data).unwrap();
+
+            "Thank you, you may now close this window."
+        }
+
         rocket::custom(RocketFigment::from(rocket::Config::default()).join(("log_level", "off")))
             .manage(MyState { tx })
             .mount("/", routes![callback])
