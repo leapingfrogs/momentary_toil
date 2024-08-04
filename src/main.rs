@@ -31,6 +31,8 @@ struct AccountConfig {
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct ToilConfig {
+    #[serde(skip)]
+    args: Args,
     client_id: Option<String>,
     client_secret: Option<String>,
     redirect_uri: Option<String>,
@@ -39,21 +41,20 @@ struct ToilConfig {
 }
 
 impl ToilConfig {
-    fn new(args: &Args, cmd_line: &mut dyn CmdLineHelper) -> Self
+    fn new(args: Args) -> Self
     {
-        let mut cfg: ToilConfig = confy::load(&args.config, None).unwrap();
+        let mut cfg: ToilConfig = confy::load("momentary_toil", args.config.as_deref()).unwrap();
+        cfg.args = args;
 
-        if cfg.client_id.is_none() {
-            cfg.client_id = cmd_line.get_user_input("Enter your client_id: ").ok();
-        }
-        if cfg.client_secret.is_none() {
-            cfg.client_secret = cmd_line.get_user_input("Enter your client_secret: ").ok();
-        }
-        if cfg.redirect_uri.is_none() || !cfg.redirect_uri.eq(&Some(args.callback_url.clone())) {
-            cfg.redirect_uri = cmd_line.get_user_input("Enter your redirect_uri: ").ok();
-        }
-        confy::store("momentary_toil", None, cfg.clone()).unwrap();
+
         cfg
+    }
+
+    fn save(&self) {
+        if !cfg!(test) {
+            confy::store("momentary_toil", self.args.config.as_deref(), self.clone()).expect("Config should have saved successfully");
+            println!("Config updated in: {:?}", confy::get_configuration_file_path("momentary_toil", self.args.config.as_deref()))
+        }
     }
 }
 
@@ -79,7 +80,7 @@ fn callback(code: &str, state: &str, st: &State<MyState>) -> &'static str {
     "Thank you, you may now close this window."
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default, Clone)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(short, long, default_value_t = false)]
@@ -94,15 +95,18 @@ struct Args {
     #[arg(short, long, default_value = "default")]
     account_name: String,
 
-    #[arg(short, long, default_value = "momentary_toil")]
-    config: String,
+    #[arg(short, long, default_value = None)]
+    config: Option<String>,
+
+    #[arg(long, default_value_t = true)]
+    persist_configuration: bool,
 }
 
 #[tokio::main]
 // #[launch]
 async fn main() {
     let args = Args::parse();
-    let mut cfg = get_checked_configuration(&args, &mut CmdLine::new(stdin().lock(), stdout()));
+    let mut cfg = get_checked_configuration(args, &mut CmdLine::new(stdin().lock(), stdout()));
 
     let start_week = start_of_week();
     let end_week = end_of_week();
@@ -122,12 +126,34 @@ async fn main() {
             .await
     });
 
-    block_on(do_call(rx, &mut cfg, &args, start_week, end_week));
+    block_on(do_call(rx, &mut cfg, start_week, end_week));
 }
 
-fn get_checked_configuration(args: &Args, cmd_line: &mut dyn CmdLineHelper) -> ToilConfig
+fn get_checked_configuration(args: Args, helper: &mut dyn CmdLineHelper) -> ToilConfig
 {
-    ToilConfig::new(&args, cmd_line)
+    let mut cfg =
+        if cfg!(test) {
+            ToilConfig {
+                args,
+                client_id: None,
+                client_secret: None,
+                redirect_uri: None,
+                refresh_token: None,
+            }
+        } else {
+            ToilConfig::new(args)
+        };
+    if cfg.client_id.is_none() {
+        cfg.client_id = helper.get_user_input("Enter your client_id: ").ok();
+    }
+    if cfg.client_secret.is_none() {
+        cfg.client_secret = helper.get_user_input("Enter your client_secret: ").ok();
+    }
+    if cfg.redirect_uri.is_none() { // TODO: drive out the behaviour with a test || !cfg.redirect_uri.eq(&Some(args.callback_url.clone())) {
+        cfg.redirect_uri = helper.get_user_input("Enter your redirect_uri: ").ok();
+    }
+    cfg.save();
+    cfg
 }
 
 fn end_of_week() -> DateTime<Utc> {
@@ -193,7 +219,6 @@ where
 async fn do_call<'a>(
     rx: Receiver<CallbackData>,
     cfg: &mut ToilConfig,
-    args: &Args,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) {
@@ -225,8 +250,7 @@ async fn do_call<'a>(
         let user_consent_url = gcal.user_consent_url(&scopes);
 
         // launch a server to receive the response...
-        println!("Server started!");
-        println!("Please open the following Url: {user_consent_url}");
+        println!("Please open the following Url: {}", user_consent_url.replace(" ", "%20"));
 
         // In your redirect URL capture the code sent and our state.
         // Send it along to the request for the token.
@@ -235,9 +259,10 @@ async fn do_call<'a>(
         let state = result.state;
         let access_token = gcal.get_access_token(&code, &state).await.unwrap();
 
+        println!("Got token: {:?}", access_token);
         if !access_token.refresh_token.eq("") {
             cfg.refresh_token = Some(access_token.refresh_token);
-            confy::store("momentary_toil", None, cfg.clone()).unwrap();
+            cfg.save();
         }
     } else if !refresh.eq("") {
         // You can additionally refresh the access token with the following.
@@ -246,7 +271,7 @@ async fn do_call<'a>(
 
         if !access_token.refresh_token.eq("") {
             cfg.refresh_token = Some(access_token.refresh_token);
-            confy::store("momentary_toil", None, cfg.clone()).unwrap();
+            cfg.save();
         }
     }
 
@@ -328,7 +353,7 @@ async fn do_call<'a>(
 
     println!("  Total meeting time this week: {meeting_hours:.2} / {work_hours_per_week:.2} [{meeting_percentage:.2}%]");
     println!("  Non-Meeting time: {non_meeting_hours:.2}");
-    if args.details {
+    if cfg.args.details {
         for s in summary {
             println!("    > {}", s);
         }
@@ -353,14 +378,15 @@ mod tests {
             weeks: 1,
             callback_url: "http://localhost:8000/callback".to_string(),
             account_name: "default".to_string(),
-            config: "test".to_string(),
+            config: Some("test".to_string()),
+            persist_configuration: false,
         };
         let mut mock = MockCmdLineHelper::new();
         mock.expect_get_user_input().with(predicate::eq("Enter your client_id: ")).times(1).returning(|_| Ok("client_id".to_string()));
         mock.expect_get_user_input().with(predicate::eq("Enter your client_secret: ")).times(1).returning(|_| Ok("client_secret".to_string()));
         mock.expect_get_user_input().with(predicate::eq("Enter your redirect_uri: ")).times(1).returning(|_| Ok("redirect_uri".to_string()));
 
-        let config = get_checked_configuration(&args, &mut mock);
+        let config = get_checked_configuration(args, &mut mock);
         assert_eq!(config.client_id, Some("client_id".to_string()));
         assert_eq!(config.client_secret, Some("client_secret".to_string()));
         assert_eq!(config.redirect_uri, Some("redirect_uri".to_string()));
