@@ -1,18 +1,23 @@
+extern crate directories;
 #[macro_use]
 extern crate rocket;
 
+use std::fs::create_dir_all;
 use std::io;
 use std::io::{stdin, stdout};
+use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 
 use chrono::prelude::*;
 use clap::Parser;
+use directories::ProjectDirs;
+use figment::{Figment, providers::{Format, Serialized, Toml}};
 use futures::executor::block_on;
 use google_calendar::{Client, events::Events};
 use mockall::automock;
-use rocket::figment::Figment;
+use rocket::figment::Figment as RocketFigment;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +32,8 @@ struct AccountConfig {
 struct ToilConfig {
     #[serde(skip)]
     args: Args,
+    #[serde(skip)]
+    config_path: PathBuf,
     client_id: Option<String>,
     client_secret: Option<String>,
     redirect_uri: Option<String>,
@@ -38,6 +45,7 @@ impl Default for ToilConfig {
     fn default() -> Self {
         Self {
             args: Args::default(),
+            config_path: PathBuf::default(),
             client_id: None,
             client_secret: None,
             redirect_uri: Some("http://localhost:8000/callback".to_string()),
@@ -49,18 +57,26 @@ impl Default for ToilConfig {
 impl ToilConfig {
     fn new(args: Args) -> Self
     {
-        let binding = args.config.clone();
-        let config_name = binding.as_deref();
+        let config_path = match ProjectDirs::from("com", "leapingfrogs", "Momentary Toil") {
+            Some(proj_dirs) => Path::join(proj_dirs.config_local_dir(), "Config.toml"),
+            None => PathBuf::from("Config.toml"),
+        };
+
         ToilConfig {
             args,
-            ..confy::load("momentary_toil", config_name).expect("Valid configuration")
+            config_path: config_path.clone(),
+            ..Figment::from(Serialized::defaults(ToilConfig::default()))
+                .merge(Toml::file(config_path))
+                .extract().expect("Valid configuration")
         }
     }
 
     fn save(&self) {
         if !cfg!(test) {
-            confy::store("momentary_toil", self.args.config.as_deref(), self.clone()).expect("Config should have saved successfully");
-            println!("Config updated in: {:?}", confy::get_configuration_file_path("momentary_toil", self.args.config.as_deref()))
+            if let Some(folder) = self.config_path.parent() {
+                create_dir_all(folder).unwrap_or_else(|_| panic!("Config dir created: {:?}", self.config_path.clone()));
+            }
+            let _ = toml::to_string_pretty(&self).map(|toml| std::fs::write(self.config_path.clone(), &toml).unwrap_or_else(|_| panic!("Saved config ({:?})", self.config_path.clone())));
         }
     }
 }
@@ -95,9 +111,6 @@ struct Args {
 
     #[arg(short, long, default_value_t = 1)]
     weeks: u8,
-
-    #[arg(long, default_value = "http://localhost:8000/callback")]
-    callback_url: String,
 
     #[arg(short, long, default_value = "default")]
     account_name: String,
@@ -168,13 +181,8 @@ fn get_checked_configuration(args: Args, mut helper: Box<dyn CmdLineHelper>) -> 
 {
     let mut cfg =
         if cfg!(test) {
-            ToilConfig {
-                args,
-                client_id: None,
-                client_secret: None,
-                redirect_uri: None,
-                refresh_token: None,
-            }
+            Figment::from(Serialized::defaults(ToilConfig::default()))
+                .extract().expect("Valid configuration")
         } else {
             ToilConfig::new(args)
         };
@@ -184,16 +192,13 @@ fn get_checked_configuration(args: Args, mut helper: Box<dyn CmdLineHelper>) -> 
     if cfg.client_secret.is_none() {
         cfg.client_secret = helper.get_user_input("Enter your client_secret: ").ok();
     }
-    if cfg.redirect_uri.is_none() { // TODO: drive out the behaviour with a test || !cfg.redirect_uri.eq(&Some(args.callback_url.clone())) {
-        cfg.redirect_uri = helper.get_user_input("Enter your redirect_uri: ").ok();
-    }
     cfg.save();
     cfg
 }
 
 #[automock]
 trait DateTimeProvider {
-    fn now(self: &Self) -> DateTime<Utc> {
+    fn now(&self) -> DateTime<Utc> {
         Utc::now()
     }
 }
@@ -290,7 +295,7 @@ async fn retreive_events<'a>(
 ) -> Vec<ToilEvent> {
     let (tx, rx) = mpsc::channel();
     let _join_handle = tokio::spawn(async move {
-        rocket::custom(Figment::from(rocket::Config::default()).join(("log_level", "off")))
+        rocket::custom(RocketFigment::from(rocket::Config::default()).join(("log_level", "off")))
             .manage(MyState { tx })
             .mount("/", routes![callback])
             .launch()
@@ -365,7 +370,7 @@ async fn retreive_events<'a>(
             !e.event_type.eq("workingLocation")
                 && e.start.as_ref().map(|s| s.date.is_none()).unwrap_or(false)
                 && e.end.as_ref().map(|e| e.date.is_none()).unwrap_or(false)
-                && (e.attendees.iter().find(|a| a.self_ && a.response_status != "declined").is_some() || e.organizer.as_ref().map_or(false, |o| o.self_))
+                && (e.attendees.iter().any(|a| a.self_ && a.response_status != "declined") || e.organizer.as_ref().map_or(false, |o| o.self_))
         })
         .filter_map(|e| {
             match (
@@ -391,7 +396,6 @@ mod tests {
         let args = Args {
             details: false,
             weeks: 1,
-            callback_url: "http://localhost:8000/callback".to_string(),
             account_name: "default".to_string(),
             config: Some("test".to_string()),
             persist_configuration: false,
@@ -399,11 +403,10 @@ mod tests {
         let mut mock = MockCmdLineHelper::new();
         mock.expect_get_user_input().with(predicate::eq("Enter your client_id: ")).times(1).returning(|_| Ok("client_id".to_string()));
         mock.expect_get_user_input().with(predicate::eq("Enter your client_secret: ")).times(1).returning(|_| Ok("client_secret".to_string()));
-        mock.expect_get_user_input().with(predicate::eq("Enter your redirect_uri: ")).times(1).returning(|_| Ok("redirect_uri".to_string()));
 
         let config = get_checked_configuration(args, Box::new(mock));
         assert_eq!(config.client_id, Some("client_id".to_string()));
         assert_eq!(config.client_secret, Some("client_secret".to_string()));
-        assert_eq!(config.redirect_uri, Some("redirect_uri".to_string()));
+        assert_eq!(config.redirect_uri, Some("http://localhost:8000/callback".to_string()));
     }
 }

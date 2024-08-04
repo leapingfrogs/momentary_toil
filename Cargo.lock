@@ -317,18 +317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "confy"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45b1f4c00870f07dc34adcac82bb6a72cc5aabca8536ba1797e01df51d2ce9a0"
-dependencies = [
- "directories",
- "serde",
- "thiserror",
- "toml",
-]
-
-[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1069,13 +1057,15 @@ dependencies = [
  "chrono",
  "clap",
  "config",
- "confy",
+ "directories",
+ "figment",
  "futures",
  "google-calendar",
  "mockall",
  "rocket",
  "serde",
  "tokio",
+ "toml",
 ]
 
 [[package]]
