@@ -90,45 +90,47 @@ async fn main() {
 
     let start_week = start_of_week();
     let end_week = end_of_week();
-    // cfg.client_id.get_or_insert_with(|| prompt(None, "Enter your client_id: "));
-    // cfg.client_secret.get_or_insert_with(|| prompt(None, "Enter your client_secret: "));
-    // cfg.redirect_uri.get_or_insert_with(|| prompt(None, "Enter your redirect_uri: "));
-    // confy::store("momentary_toil", None, cfg.clone()).unwrap();
 
-    println!(
-        "Week:: {:?} -> {:?}",
-        start_week.date_naive(),
-        end_week.date_naive()
-    );
+    match (start_week, end_week) {
+        (Some(start_week), Some(end_week)) => {
+            println!(
+                "Week:: {:?} -> {:?}",
+                start_week.date_naive(),
+                end_week.date_naive()
+            );
 
-    let _join_handle = tokio::spawn(async move {
-        rocket::custom(Figment::from(rocket::Config::default()).join(("log_level", "off")))
-            .manage(MyState { tx })
-            .mount("/", routes![callback])
-            .launch()
-            .await
-    });
+            let _join_handle = tokio::spawn(async move {
+                rocket::custom(Figment::from(rocket::Config::default()).join(("log_level", "off")))
+                    .manage(MyState { tx })
+                    .mount("/", routes![callback])
+                    .launch()
+                    .await
+            });
 
-    block_on(do_call(rx, &mut cfg, &args, start_week, end_week));
-    // let _ = join_handle.await;
+            block_on(do_call(rx, &mut cfg, &args, start_week, end_week));
+        }
+        _ => {
+            println!("Unable to identify start and end dates");
+        }
+    }
 }
 
-fn end_of_week() -> DateTime<Utc> {
+fn end_of_week() -> Option<DateTime<Utc>> {
     day_of_week(Weekday::Sat)
 }
 
-fn start_of_week() -> DateTime<Utc> {
+fn start_of_week() -> Option<DateTime<Utc>> {
     day_of_week(Weekday::Mon)
 }
 
-fn day_of_week(weekday: Weekday) -> DateTime<Utc> {
+fn day_of_week(weekday: Weekday) -> Option<DateTime<Utc>> {
     let current_week = Utc::now().iso_week();
-    let result = NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday)
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .unwrap();
-    Utc.from_local_datetime(&result)
-        .single()
-        .expect("A valid date for the week")
+    match NaiveDate::from_isoywd_opt(current_week.year(), current_week.week(), weekday) {
+        Some(date) => date
+            .and_hms_opt(0, 0, 0)
+            .map(|d| Utc.from_local_datetime(&d).single())?,
+        None => None,
+    }
 }
 
 /// A function to display messages and get user input.
@@ -294,8 +296,6 @@ async fn do_call<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn tests_available() {
         assert!(true);
